@@ -595,6 +595,117 @@ mod run_tests {
 	use super::*;
 	use pretty_assertions::{assert_eq, assert_ne};
 	use sp_core::U256;
+	pub use sp_runtime::{traits::Hash, AccountId32};
+
+
+	fn load_wasm_module<T>(path: &str) -> std::io::Result<(Vec<u8>, sp_core::H256)>
+	where
+		T: frame_system::Config,
+	{
+		let wasm_binary = std::fs::read(path)?;
+		let code_hash = sp_io::hashing::keccak_256(&wasm_binary);
+		Ok((wasm_binary, sp_core::H256(code_hash)))
+	}
+
+	fn function_selector(name: &str) -> Vec<u8> {
+		let hash = sp_io::hashing::blake2_256(name.as_bytes());
+		[hash[0..4].to_vec()].concat()
+	}
+
+	#[test]
+	fn flipper_work() {
+		env_logger::init();
+		let (wasm, code_hash) = load_wasm_module::<Test>(
+			// "/Users/peter/dev/use-ink/ink/integration-tests/flipper/target/ink/flipper.riscv",
+			"/Users/peter/dev/use-ink/ink/integration-tests/public/flipper/target/ink/flipper.riscv",
+			// "/Users/peter/dev/use-ink/ink/integration-tests/flipper/tmp.polkavm",
+			//"/Users/peter/dev/use-ink/ink/integration-tests/public/flipper/tmp-new.polkavm",
+		)
+			.unwrap();
+
+		const GAS_LIMIT: Weight = Weight::from_parts(100_000_000_000, 3 * 1024 * 1024);
+		const DEBUG_OUTPUT: crate::DebugInfo = crate::DebugInfo::UnsafeDebug;
+
+		ExtBuilder::default().build().execute_with(|| {
+			let _ = <Test as Config>::Currency::set_balance(&ALICE, 1_000_000_000_000_000);
+			let init_value = 1_000;
+			log::info!("function_selected: {:?}", function_selector("new_default"));
+
+			// We determine the storage deposit limit after uploading because it depends on ALICEs
+			// free balance which is changed by uploading a module.
+			// assert_ok!(Contracts::upload_code(
+			// 	RuntimeOrigin::signed(ALICE),
+			// 	wasm,
+			// 	deposit_limit::<Test>(),
+			// ));
+			// let Contract { addr, account_id } =
+			// 	builder::bare_instantiate(Code::Existing(code_hash))
+			// 		.value(init_value)
+			// 		.build_and_unwrap_contract();
+			// assert!(ContractInfoOf::<Test>::contains_key(&addr));
+
+			let result = Contracts::bare_instantiate(
+				RuntimeOrigin::signed(ALICE),
+				0,
+				GAS_LIMIT,
+				1 * 1_000_000_000,
+				Code::Upload(wasm),
+				function_selector("new_default"),
+				None,
+				DEBUG_OUTPUT,
+				crate::CollectEvents::Skip,
+			)
+				.result
+				.unwrap();
+
+			let addr = result.addr;
+			log::info!("result: {:?}", result.result.did_revert());
+			log::info!("addr: {:?}", addr);
+			log::info!("constructor: {:?}", hex::encode(function_selector("new_default")));
+			log::info!("message: {:?}", hex::encode(function_selector("flip")));
+			log::info!("get: {:?}", hex::encode(function_selector("get")));
+
+            let result = Contracts::bare_call(
+                RuntimeOrigin::signed(ALICE),
+                addr.clone(),
+                0,
+                Weight::from_parts(100_000_000_000, 3 * 1024 * 1024),
+                1_000_000_000,
+                function_selector("get"),
+                DEBUG_OUTPUT,
+                pallet_revive::CollectEvents::Skip,
+            );
+
+            log::info!("was success: {:?}", result.result.unwrap());
+
+			log::info!("flipping...");
+			let result = Contracts::bare_call(
+				RuntimeOrigin::signed(ALICE),
+				addr.clone(),
+				0,
+				Weight::from_parts(100_000_000_000, 3 * 1024 * 1024),
+				1_000_000_000,
+				function_selector("flip"),
+				DEBUG_OUTPUT,
+				pallet_revive::CollectEvents::Skip,
+			);
+
+			log::info!("was success: {:?}", result.result.unwrap());
+
+			let result = Contracts::bare_call(
+				RuntimeOrigin::signed(ALICE),
+				addr.clone(),
+				0,
+				Weight::from_parts(100_000_000_000, 3 * 1024 * 1024),
+				1_000_000_000,
+				function_selector("get"),
+				DEBUG_OUTPUT,
+				pallet_revive::CollectEvents::Skip,
+			);
+
+			log::info!("was success: {:?}", result.result.unwrap());
+		});
+	}
 
 	#[test]
 	fn calling_plain_account_is_balance_transfer() {
